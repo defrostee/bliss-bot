@@ -58,6 +58,45 @@ const DARE_NICKNAMES = [
 // Track who got the "dare" ping message
 const dareUsers = new Map(); // userId -> boolean
 
+// ─── Bump reminder intervals ──────────────────────────────────────────────────
+const bumpIntervals = new Map(); // guildId -> intervalId
+
+function startBumpReminder(guildId) {
+  // Clear any existing interval for this guild
+  if (bumpIntervals.has(guildId)) {
+    clearInterval(bumpIntervals.get(guildId));
+  }
+
+  const intervalId = setInterval(async () => {
+    const g = getGuild(guildId);
+    if (!g.bumpr?.enabled) {
+      clearInterval(bumpIntervals.get(guildId));
+      bumpIntervals.delete(guildId);
+      return;
+    }
+
+    try {
+      const guild = await client.guilds.fetch(guildId);
+      const channel = await guild.channels.fetch(g.bumpr.channelId);
+      if (!channel) return;
+
+      const pingText = g.bumpr.pingRoleId ? `<@&${g.bumpr.pingRoleId}> ` : '';
+      await channel.send(`${pingText}⏰ Time to bump the server! Use \`/bump\` from Disboard.`);
+    } catch (e) {
+      console.error(`Bump reminder error for guild ${guildId}:`, e.message);
+    }
+  }, 60 * 60 * 1000); // every hour
+
+  bumpIntervals.set(guildId, intervalId);
+}
+
+function stopBumpReminder(guildId) {
+  if (bumpIntervals.has(guildId)) {
+    clearInterval(bumpIntervals.get(guildId));
+    bumpIntervals.delete(guildId);
+  }
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 function isOwner(member) {
   return member.id === member.guild.ownerId;
@@ -78,6 +117,14 @@ client.once('ready', () => {
   console.log(`✅ Logged in as ${client.user.tag}`);
   console.log(`   Prefix: -`);
   console.log(`   Servers: ${client.guilds.cache.size}`);
+
+  // Restart any active bump reminders after bot restarts
+  for (const [guildId, gData] of Object.entries(db)) {
+    if (gData.bumpr?.enabled && gData.bumpr?.channelId) {
+      console.log(`   Restarting bump reminder for guild ${guildId}`);
+      startBumpReminder(guildId);
+    }
+  }
 });
 
 // ─── Auto-role on join ────────────────────────────────────────────────────────
@@ -92,14 +139,14 @@ client.on('guildMemberAdd', async (member) => {
   }
 });
 
-// ─── Ping protection ──────────────────────────────────────────────────────────
-const pingOffences = new Map(); // `${guildId}:${userId}:${targetId}` -> count
-
+// ─── Message handler ──────────────────────────────────────────────────────────
 client.on('messageCreate', async (message) => {
   if (message.author.bot) return;
   if (!message.guild) return;
 
   const g = getGuild(message.guild.id);
+
+  // ─── Ping protection ────────────────────────────────────────────────────────
   const protectedPings = g.protectedPings || [];
 
   for (const targetId of protectedPings) {
@@ -107,9 +154,11 @@ client.on('messageCreate', async (message) => {
     if (!mentioned) continue;
 
     const key = `${message.guild.id}:${message.author.id}:${targetId}`;
-    const current = pingOffences.get(key) || 0;
+    const current = (g.pingOffences?.[key]) || 0;
     const next = current + 1;
-    pingOffences.set(key, next);
+    if (!g.pingOffences) g.pingOffences = {};
+    g.pingOffences[key] = next;
+    save();
 
     const target = await message.guild.members.fetch(targetId).catch(() => null)
       || message.guild.roles.cache.get(targetId);
@@ -119,14 +168,10 @@ client.on('messageCreate', async (message) => {
       await message.reply(`HEY! please dont ping ${name}!`);
     } else if (next === 2) {
       await message.reply(`s t o p     p i n g i n g        ${name}     p l e a s e !`);
-      try {
-        await message.member.timeout(5 * 60 * 1000, 'Repeated pinging of protected user');
-      } catch {}
+      try { await message.member.timeout(5 * 60 * 1000, 'Repeated pinging of protected user'); } catch {}
     } else if (next === 3) {
       await message.reply(`now you're being punished. i warned you.`);
-      try {
-        await message.member.timeout(3 * 24 * 60 * 60 * 1000, 'Repeated pinging of protected user');
-      } catch {}
+      try { await message.member.timeout(3 * 24 * 60 * 60 * 1000, 'Repeated pinging of protected user'); } catch {}
     } else if (next === 4) {
       await message.reply(`you're getting kicked, next is ban.`);
       try {
@@ -140,7 +185,7 @@ client.on('messageCreate', async (message) => {
         await message.member.ban({ reason: 'Repeated pinging of protected user' });
       } catch {}
     }
-    return; // only process first match per message
+    return;
   }
 
   // ─── Commands ───────────────────────────────────────────────────────────────
@@ -155,19 +200,15 @@ client.on('messageCreate', async (message) => {
     const userId = message.author.id;
     if (dareUsers.get(userId)) {
       dareUsers.delete(userId);
-      // Change nickname
       const botName = message.guild.members.me?.displayName || client.user.username;
       const template = DARE_NICKNAMES[Math.floor(Math.random() * DARE_NICKNAMES.length)];
       const newNick = template.replace('{BOT}', botName);
-      try {
-        await message.member.setNickname(newNick, 'You were warned about pinging');
-      } catch {}
+      try { await message.member.setNickname(newNick, 'You were warned about pinging'); } catch {}
       return message.reply('i warned you');
     }
 
     const response = PING_MESSAGES[Math.floor(Math.random() * PING_MESSAGES.length)];
     await message.reply(response);
-
     if (response === 'ping me again, i dare you.') {
       dareUsers.set(userId, true);
     }
@@ -190,10 +231,10 @@ client.on('messageCreate', async (message) => {
         { name: '`-ping`', value: 'Check if bot is alive', inline: true },
         { name: '`-help`', value: 'Show this message', inline: true },
         { name: '`-nuke #channel`', value: 'Clear all messages in a channel (mod only)', inline: false },
-        { name: '`-abump`', value: 'Use /bump from another bot (owner only)', inline: false },
         { name: '`-fnitro option:react emoji-id:ID message-id:ID`', value: 'Fake react with nitro emoji via webhook', inline: false },
         { name: '`-fnitro option:sticker sticker-id:ID`', value: 'Send a nitro sticker via webhook', inline: false },
         { name: '`-color color:#RRGGBB`', value: 'Set your personal cosmetic color role', inline: false },
+        { name: '`-bumpr enabled:yes/no #channel ping:yes/no @role`', value: 'Enable/disable hourly bump reminders in a channel with optional role ping (owner only)', inline: false },
         { name: '`-s!mr @role`', value: 'Set the mod role (owner only)', inline: false },
         { name: '`-s!ping set:yes/no @user_or_role`', value: 'Protect a user/role from pings (owner only)', inline: false },
         { name: '`-s!autorole @role`', value: 'Set auto-role for new members (owner only)', inline: false },
@@ -221,7 +262,6 @@ client.on('messageCreate', async (message) => {
       return message.reply('❌ I need **Manage Messages** permission in that channel.');
     }
 
-    // Clone + delete strategy for full purge
     try {
       const position = targetChannel.position;
       const cloned = await targetChannel.clone({ reason: `Channel purge by ${message.author.tag}` });
@@ -235,27 +275,63 @@ client.on('messageCreate', async (message) => {
     return;
   }
 
-  // ── -abump ─────────────────────────────────────────────────────────────────
-  if (cmd === 'abump') {
+  // ── -bumpr ─────────────────────────────────────────────────────────────────
+  if (cmd === 'bumpr') {
     if (!isOwner(message.member)) return message.reply('❌ Owner only.');
 
-    // Look for Disboard bot and trigger its bump command
-    const disboard = message.guild.members.cache.find(m => m.user.id === '302050872383242240');
-    if (!disboard) return message.reply('❌ Disboard bot not found in this server.');
-
-    try {
-      // Send /bump as a slash command interaction via bot
-      await message.channel.sendSlashCommand(disboard.user, 'bump').catch(() => {});
-      await message.reply('✅ Attempted to bump the server!');
-    } catch {
-      await message.reply('⚠️ Could not auto-bump. Try using `/bump` manually from Disboard.');
+    // Parse named args
+    const parsedArgs = {};
+    for (let i = 1; i < args.length; i++) {
+      const colonIdx = args[i].indexOf(':');
+      if (colonIdx !== -1) {
+        const key = args[i].slice(0, colonIdx).toLowerCase();
+        const val = args[i].slice(colonIdx + 1).toLowerCase();
+        parsedArgs[key] = val;
+      }
     }
-    return;
+
+    const enabledArg = parsedArgs['enabled'];
+    if (!enabledArg || (enabledArg !== 'yes' && enabledArg !== 'no')) {
+      return message.reply('❌ Usage: `-bumpr enabled:yes/no #channel ping:yes/no @role`');
+    }
+
+    const gData = getGuild(message.guild.id);
+
+    if (enabledArg === 'no') {
+      gData.bumpr = { enabled: false };
+      save();
+      stopBumpReminder(message.guild.id);
+      return message.reply('✅ Bump reminders **disabled**.');
+    }
+
+    // enabled:yes — need a channel
+    const channel = message.mentions.channels.first();
+    if (!channel) {
+      return message.reply('❌ Please mention a channel. Usage: `-bumpr enabled:yes #channel ping:yes/no @role`');
+    }
+
+    const pingArg = parsedArgs['ping'];
+    const wantsPing = pingArg === 'yes';
+    const pingRole = wantsPing ? message.mentions.roles.first() : null;
+
+    if (wantsPing && !pingRole) {
+      return message.reply('❌ You set `ping:yes` but didn\'t mention a role.');
+    }
+
+    gData.bumpr = {
+      enabled: true,
+      channelId: channel.id,
+      pingRoleId: pingRole?.id || null,
+    };
+    save();
+    startBumpReminder(message.guild.id);
+
+    const roleText = pingRole ? ` and will ping <@&${pingRole.id}>` : ' with no role ping';
+    return message.reply(`✅ Bump reminders **enabled** in <#${channel.id}>${roleText} every hour.`);
   }
 
   // ── -fnitro ────────────────────────────────────────────────────────────────
   if (cmd === 'fnitro') {
-    // Parse named args: option:X emoji-id:X sticker-id:X message-id:X
     const parsedArgs = {};
     for (let i = 1; i < args.length; i++) {
       const [key, val] = args[i].split(':');
@@ -272,11 +348,9 @@ client.on('messageCreate', async (message) => {
         return message.reply('❌ Usage: `-fnitro option:react emoji-id:EMOJI_ID message-id:MESSAGE_ID`');
       }
 
-      // Find the emoji
       const emoji = client.emojis.cache.get(emojiId);
       if (!emoji) return message.reply('❌ Emoji not found. Make sure the bot is in a server that has this emoji.');
 
-      // Find the target message
       let targetMsg;
       try {
         targetMsg = await message.channel.messages.fetch(messageId);
@@ -284,11 +358,9 @@ client.on('messageCreate', async (message) => {
         return message.reply('❌ Could not find that message in this channel.');
       }
 
-      // Create or fetch webhook
       const webhook = await getOrCreateWebhook(message.channel);
       if (!webhook) return message.reply('❌ Could not create webhook in this channel.');
 
-      // Send a fake reaction (as a styled message since true reactions from webhooks are not possible)
       const member = message.member;
       const avatarURL = member.displayAvatarURL({ dynamic: true });
 
@@ -306,7 +378,6 @@ client.on('messageCreate', async (message) => {
       const stickerId = parsedArgs['sticker-id'];
       if (!stickerId) return message.reply('❌ Usage: `-fnitro option:sticker sticker-id:STICKER_ID`');
 
-      // Fetch sticker
       let sticker;
       try {
         sticker = await client.fetchSticker(stickerId);
