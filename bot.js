@@ -62,7 +62,6 @@ const dareUsers = new Map(); // userId -> boolean
 const bumpIntervals = new Map(); // guildId -> intervalId
 
 function startBumpReminder(guildId) {
-  // Clear any existing interval for this guild
   if (bumpIntervals.has(guildId)) {
     clearInterval(bumpIntervals.get(guildId));
   }
@@ -118,7 +117,6 @@ client.once('ready', () => {
   console.log(`   Prefix: -`);
   console.log(`   Servers: ${client.guilds.cache.size}`);
 
-  // Restart any active bump reminders after bot restarts
   for (const [guildId, gData] of Object.entries(db)) {
     if (gData.bumpr?.enabled && gData.bumpr?.channelId) {
       console.log(`   Restarting bump reminder for guild ${guildId}`);
@@ -215,6 +213,16 @@ client.on('messageCreate', async (message) => {
     return;
   }
 
+  // ── -bayo ──────────────────────────────────────────────────────────────────
+  if (cmd === 'bayo') {
+    return message.reply('[Invite Bayo!](https://discord.com/oauth2/authorize?client_id=1491500301524537364&permissions=8&scope=bot%20applications.commands)');
+  }
+
+  // ── -bliss ─────────────────────────────────────────────────────────────────
+  if (cmd === 'bliss') {
+    return message.reply('[Invite Bliss!](https://discord.com/oauth2/authorize?client_id=1491500301524537364&permissions=8&scope=bot%20applications.commands)');
+  }
+
   // ── -help ──────────────────────────────────────────────────────────────────
   if (cmd === 'help') {
     const guildData = getGuild(message.guild.id);
@@ -230,6 +238,8 @@ client.on('messageCreate', async (message) => {
       .addFields(
         { name: '`-ping`', value: 'Check if bot is alive', inline: true },
         { name: '`-help`', value: 'Show this message', inline: true },
+        { name: '`-bayo`', value: 'Get the invite link for Bayo', inline: true },
+        { name: '`-bliss`', value: 'Get the invite link for Bliss', inline: true },
         { name: '`-nuke #channel`', value: 'Clear all messages in a channel (mod only)', inline: false },
         { name: '`-fnitro option:react emoji-id:ID message-id:ID`', value: 'Fake react with nitro emoji via webhook', inline: false },
         { name: '`-fnitro option:sticker sticker-id:ID`', value: 'Send a nitro sticker via webhook', inline: false },
@@ -279,7 +289,6 @@ client.on('messageCreate', async (message) => {
   if (cmd === 'bumpr') {
     if (!isOwner(message.member)) return message.reply('❌ Owner only.');
 
-    // Parse named args
     const parsedArgs = {};
     for (let i = 1; i < args.length; i++) {
       const colonIdx = args[i].indexOf(':');
@@ -304,7 +313,6 @@ client.on('messageCreate', async (message) => {
       return message.reply('✅ Bump reminders **disabled**.');
     }
 
-    // enabled:yes — need a channel
     const channel = message.mentions.channels.first();
     if (!channel) {
       return message.reply('❌ Please mention a channel. Usage: `-bumpr enabled:yes #channel ping:yes/no @role`');
